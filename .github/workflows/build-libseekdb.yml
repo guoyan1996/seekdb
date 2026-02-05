@@ -8,7 +8,7 @@
 # macOS builds use runner macos-14 and set CMAKE_OSX_DEPLOYMENT_TARGET=11.0 so the dylib runs on macOS 11+ (Big Sur and later).
 # Artifacts: three platform zips (linux-x64, linux-arm64, darwin-arm64); combined artifact libseekdb-all-platforms; optional S3 upload when DESTINATION_TARGET_PATH or AWS_S3_BUCKET and credentials are set.
 name: Build libseekdb
-run-name: Build libseekdb for ${{ github.sha }}
+run-name: Build libseekdb for ${{ env.COMMIT_SHA }}
 
 on:
   push:
@@ -36,12 +36,14 @@ on:
       - "docs/**"
 
 env:
+  # Commit actually built: PR head commit for pull_request, else the event commit (e.g. push)
+  COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
   # S3 upload defaults (override via Variables: DESTINATION_TARGET_PATH or AWS_S3_BUCKET)
   BUCKET_NAME: ${{ vars.AWS_S3_BUCKET || 'oceanbase-seekdb-builds' }}
-  DESTINATION_TARGET_PATH: ${{ vars.DESTINATION_TARGET_PATH || format('s3://oceanbase-seekdb-builds/libseekdb/all_commits/{0}', github.sha) }}
+  DESTINATION_TARGET_PATH: ${{ vars.DESTINATION_TARGET_PATH || format('s3://oceanbase-seekdb-builds/libseekdb/all_commits/{0}', env.COMMIT_SHA) }}
   S3_BUCKET: ${{ vars.AWS_S3_BUCKET || 'oceanbase-seekdb-builds' }}
-  S3_PREFIX: libseekdb/all_commits/${{ github.sha }}
+  S3_PREFIX: libseekdb/all_commits/${{ env.COMMIT_SHA }}
 
 jobs:
   # ---------- Build libseekdb on Linux / macOS ----------
