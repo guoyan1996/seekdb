@@ -19,25 +19,27 @@ on:
       - "*.*.x"
       - "integration/*"
     paths-ignore:
-      - "!.github/workflows/build-libseekdb*"
-      - ".github/**"
       - "*.md"
       - "LICENSE"
       - "CODEOWNERS"
       - "docs/**"
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or commit SHA to build (empty = use default branch)'
+        required: false
+        type: string
+        default: ''
   pull_request:
     paths-ignore:
-      - ".github/**"
-      - "!.github/workflows/build-libseekdb*"
       - "*.md"
       - "LICENSE"
       - "CODEOWNERS"
       - "docs/**"
 
 env:
-  # Commit actually built: PR head commit for pull_request, else the event commit (e.g. push)
-  COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  # Commit/ref actually built: workflow_dispatch input ref, PR head, or event commit (push)
+  COMMIT_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || (github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha) }}
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
   # S3 upload defaults (override via Variables: DESTINATION_TARGET_PATH or AWS_S3_BUCKET)
   BUCKET_NAME: ${{ vars.AWS_S3_BUCKET || 'oceanbase-seekdb-builds' }}
@@ -69,8 +71,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # For PRs, build the branch head to avoid merge-commit conflict markers; for push use the pushed commit
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          # workflow_dispatch: use inputs.ref if set; PR: head sha; push: event sha
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || (github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha) }}
 
       - name: Cache deps (Linux, el7)
         uses: actions/cache@v4
@@ -169,7 +171,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || (github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha) }}
 
       - name: Install macOS dependencies
         run: brew install cmake dylibbundler googletest ccache pybind11 utf8proc thrift re2 brotli bzip2 || true
