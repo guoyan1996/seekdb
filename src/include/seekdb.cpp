@@ -312,15 +312,19 @@ static bool g_closing = false;  // Flag to indicate we're in closing process
 static struct sigaction g_old_segv_handler;  // Store original SIGSEGV handler
 static bool g_segv_handler_installed = false;
 
+// Set when embedded DB was ever successfully opened; never cleared.
+// Used by the signal handler so we can recognize cleanup segfaults even when
+// g_embedded_opened has already been set to false by seekdb_close() or during destructors.
+static bool g_embedded_ever_opened = false;
+
 // Signal handler for SIGSEGV during cleanup
 // This allows graceful handling of segfaults during static destructors
 // Must be defined before seekdb_library_init() which uses it
 static void segv_handler_during_close(int sig, siginfo_t* info, void* context) {
-    // If we're in the closing process or database was opened, ignore the segfault
+    // If we're in the closing process or database was (or had been) opened, treat as cleanup segfault
     // This is expected during OceanBase static destructor cleanup at program exit
-    if (g_closing || g_embedded_opened) {
+    if (g_closing || g_embedded_opened || g_embedded_ever_opened) {
         // Exit gracefully with success code since cleanup segfault is expected
-        // This happens during static destructors at program exit, not during normal operation
         _exit(0);
     }
     
@@ -328,7 +332,6 @@ static void segv_handler_during_close(int sig, siginfo_t* info, void* context) {
     if (g_segv_handler_installed) {
         sigaction(SIGSEGV, &g_old_segv_handler, nullptr);
         g_segv_handler_installed = false;
-        // Re-raise the signal with original handler
         raise(SIGSEGV);
     }
 }
@@ -762,6 +765,7 @@ static int do_seekdb_open_inner(const char* db_dir, int port) {
             if (read_ret == 0 && pid_in_file == static_cast<long>(getpid())) {
                 ret = OB_SUCCESS;
                 g_embedded_opened = true;
+                g_embedded_ever_opened = true;
                 strncpy(g_embedded_work_dir, work_abs_dir.ptr(), sizeof(g_embedded_work_dir) - 1);
                 g_embedded_work_dir[sizeof(g_embedded_work_dir) - 1] = '\0';
                 strncpy(g_embedded_base_dir, opts.base_dir_.ptr(), sizeof(g_embedded_base_dir) - 1);
@@ -900,6 +904,7 @@ static int do_seekdb_open_inner(const char* db_dir, int port) {
     
     if (OB_SUCCESS == ret) {
         g_embedded_opened = true;
+        g_embedded_ever_opened = true;
         return SEEKDB_SUCCESS;
     } else {
         if (g_embedded_pid_locked) {
@@ -1049,6 +1054,17 @@ void seekdb_close(void) {
         // Set closing flag to indicate we're in cleanup process
         // This allows the signal handler to recognize cleanup-related segfaults
         g_closing = true;
+        
+        // Re-install our SIGSEGV handler so it is active during atexit/static destructors.
+        // Other runtimes (e.g. Rust, Node) may overwrite the handler; after seekdb_close()
+        // the process often exits and C++ destructors can trigger segfaults in worker threads.
+        if (g_segv_handler_installed) {
+            struct sigaction sa;
+            sa.sa_sigaction = segv_handler_during_close;
+            sigemptyset(&sa.sa_mask);
+            sa.sa_flags = SA_SIGINFO;
+            (void)sigaction(SIGSEGV, &sa, &g_old_segv_handler);
+        }
         
         // Note: We skip observer.destroy() because:
         // 1. It may cause segfault/OB_ABORT during cleanup (static destructor ordering issues)
