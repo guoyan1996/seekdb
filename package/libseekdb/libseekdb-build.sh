@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build libseekdb, on macOS bundle deps to libs/, then pack lib + libs/ + seekdb.h into libseekdb-<os>-<arch>.zip
-# Build product is written to TOP_DIR/build_libseekdb, then moved to package/libseekdb/ (this script's directory).
+# Zip is written to this script's directory (package/libseekdb/).
 #
 # Usage:
 #   cd package/libseekdb && ./libseekdb-build.sh
@@ -15,7 +15,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-release}"
 BUILD_DIR="$TOP_DIR/build_${BUILD_TYPE}"
-PACKAGE_BUILD_DIR="$TOP_DIR/build_libseekdb"
 WORK_DIR=""
 UNAME_S="$(uname -s)"
 UNAME_M="$(uname -m)"
@@ -70,6 +69,18 @@ else
   # @loader_path = root, so main's deps must be @loader_path/libs/xxx. When a dep in libs/
   # is loaded, @loader_path = libs/, so dep refs must be @loader_path/xxx (not libs/xxx).
   if [[ "$UNAME_S" == "Darwin" && -f "$WORK_DIR/libseekdb.dylib" ]]; then
+    # If the dylib was already bundled (deps point to @loader_path/libs/), dylibbundler
+    # would prompt for paths when libs/ is empty. Rebuild to get a clean dylib with absolute deps.
+    if otool -L "$WORK_DIR/libseekdb.dylib" | grep -q '@loader_path/libs/'; then
+      echo "[BUILD] libseekdb.dylib was already bundled; rebuilding to get clean dylib for this run..."
+      rm -f "$WORK_DIR/libseekdb.dylib"
+      (cd "$TOP_DIR" && ./build.sh "$BUILD_TYPE" -DBUILD_EMBED_MODE=ON --make) || exit 1
+    fi
+
+    # Save pristine dylib so we can restore after zip (keeps build dir clean; next run won't rebuild)
+    cp "$WORK_DIR/libseekdb.dylib" "$WORK_DIR/libseekdb.dylib.orig"
+    SAVED_PRISTINE_DYLIB="$WORK_DIR/libseekdb.dylib.orig"
+
     echo "[BUILD] Bundling libseekdb.dylib for macOS..."
     cd "$WORK_DIR"
     DYLIB_NAME="libseekdb.dylib"
@@ -106,6 +117,25 @@ else
     done
 
     echo "[BUILD] Bundle done: $DYLIB_NAME at root, deps in $WORK_DIR/libs"
+
+    # Sign dylibs. Ad-hoc when CODESIGN_IDENTITY unset;
+    # when set, use Developer ID and optionally CODESIGN_ENTITLEMENTS + --options runtime.
+    if command -v codesign &>/dev/null; then
+      SIGN_ID="${CODESIGN_IDENTITY:--}"
+      ENTITLEMENTS_ARG=()
+      [[ -n "${CODESIGN_ENTITLEMENTS:-}" && -f "${CODESIGN_ENTITLEMENTS}" ]] && ENTITLEMENTS_ARG=(--entitlements "$CODESIGN_ENTITLEMENTS")
+      RUNTIME_ARG=()
+      [[ -n "${CODESIGN_IDENTITY:-}" && "$SIGN_ID" != "-" ]] && RUNTIME_ARG=(--options runtime)
+      echo "[BUILD] Signing dylibs for macOS (identity: ${SIGN_ID})..."
+      for d in libs/*.dylib; do
+        [[ -f "$d" ]] || continue
+        codesign "${RUNTIME_ARG[@]}" "${ENTITLEMENTS_ARG[@]}" -f --sign "$SIGN_ID" "$d" || die "codesign failed: $d"
+      done
+      codesign "${RUNTIME_ARG[@]}" "${ENTITLEMENTS_ARG[@]}" -f --sign "$SIGN_ID" "$DYLIB_NAME" || die "codesign failed: $DYLIB_NAME"
+      echo "[BUILD] Signing done."
+    else
+      echo "[BUILD] WARNING: codesign not found; dylibs are unsigned (may fail to load on macOS)."
+    fi
     cd - >/dev/null
   fi
 fi
@@ -145,8 +175,7 @@ ZIP_NAME="libseekdb-${OS}-${ARCH_SUFFIX}.zip"
 MAIN_LIB_NAME="$(basename "$MAIN_LIB")"
 
 # --- 6) Assemble and zip ---
-mkdir -p "$PACKAGE_BUILD_DIR"
-OUTPUT_ZIP="$PACKAGE_BUILD_DIR/$ZIP_NAME"
+OUTPUT_ZIP="$SCRIPT_DIR/$ZIP_NAME"
 PACK_DIR="$(mktemp -d)"
 trap "rm -rf '$PACK_DIR'" EXIT
 
@@ -161,5 +190,12 @@ if [[ -d "$DEPS_DIR" ]]; then
 fi
 
 (cd "$PACK_DIR" && zip -r "$OUTPUT_ZIP" . -x "*.DS_Store")
-mv "$OUTPUT_ZIP" "$SCRIPT_DIR/" || exit 2
-echo "[BUILD] Created: $SCRIPT_DIR/$ZIP_NAME"
+echo "[BUILD] Created: $OUTPUT_ZIP"
+
+# Restore build dir to pristine dylib on macOS so next run does not trigger rebuild
+if [[ -n "${SAVED_PRISTINE_DYLIB:-}" && -f "${SAVED_PRISTINE_DYLIB}" ]]; then
+  echo "[BUILD] Restoring build dir to pristine dylib (avoid rebuild on next run)..."
+  cp "$SAVED_PRISTINE_DYLIB" "$WORK_DIR/libseekdb.dylib"
+  rm -rf "$WORK_DIR/libs"
+  rm -f "$SAVED_PRISTINE_DYLIB"
+fi

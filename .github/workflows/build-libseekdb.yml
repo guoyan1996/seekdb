@@ -6,6 +6,9 @@
 #   darwin-arm64: runner macos-14, native, zip libseekdb-darwin-arm64.zip (min macOS 11.0)
 #
 # macOS builds use runner macos-14 and set CMAKE_OSX_DEPLOYMENT_TARGET=11.0 so the dylib runs on macOS 11+ (Big Sur and later).
+# On macOS, dylibs are signed in libseekdb-build.sh: ad-hoc when no cert; when repo is oceanbase/seekdb and secrets are set,
+# use Developer ID (secrets: OSX_CODESIGN_BUILD_CERTIFICATE_BASE64, OSX_CODESIGN_P12_PASSWORD, OSX_CODESIGN_KEYCHAIN_PASSWORD, OSX_CODESIGN_IDENTITY).
+# Optional: add notarization step and APPLE_ID/PASSWORD/TEAM_ID secrets to notarize the zip.
 # Artifacts: three platform zips (linux-x64, linux-arm64, darwin-arm64); combined artifact libseekdb-all-platforms; optional S3 upload when DESTINATION_TARGET_PATH or AWS_S3_BUCKET and credentials are set.
 name: Build libseekdb
 run-name: Build libseekdb for ${{ env.COMMIT_SHA }}
@@ -26,10 +29,10 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Branch, tag or commit SHA to build (empty = use default branch)'
+        description: "Branch, tag or commit SHA to build (empty = use default branch)"
         required: false
         type: string
-        default: ''
+        default: ""
   pull_request:
     paths-ignore:
       - "*.md"
@@ -214,9 +217,25 @@ jobs:
           cd build_release && make -j$(sysctl -n hw.ncpu) libseekdb
           ccache -s
 
+      # macOS code signing. Entitlements allow loading embedded dylib.
+      - name: Create entitlements (macOS)
+        run: |
+          echo -e '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>com.apple.security.cs.disable-library-validation</key>\n  <true/>\n</dict>\n</plist>' > package/libseekdb/entitlements.plist
+
+      # Only import certificate on main repo so forks do not need these secrets.
+      - name: Import certificate (macOS)
+        if: github.repository == 'oceanbase/seekdb'
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.OSX_CODESIGN_BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.OSX_CODESIGN_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.OSX_CODESIGN_KEYCHAIN_PASSWORD }}
+        run: . package/libseekdb/osx_import_codesign_certificate.sh
+
       - name: Pack libseekdb (macOS)
         env:
           ARCH: ${{ matrix.arch }}
+          CODESIGN_IDENTITY: ${{ secrets.OSX_CODESIGN_IDENTITY }}
+          CODESIGN_ENTITLEMENTS: ${{ github.workspace }}/package/libseekdb/entitlements.plist
         run: cd package/libseekdb && bash libseekdb-build.sh
 
       - name: Upload artifact
