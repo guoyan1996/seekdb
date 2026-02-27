@@ -13,14 +13,9 @@
 name: Build libseekdb
 run-name: Build libseekdb for ${{ env.COMMIT_SHA }}
 
+# Triggers on all branches; S3 upload runs only on main, master, develop, *.*.x, integration/* (see release-artifacts job).
 on:
   push:
-    branches:
-      - main
-      - master
-      - develop
-      - "*.*.x"
-      - "integration/*"
     paths-ignore:
       - "*.md"
       - "LICENSE"
@@ -44,7 +39,8 @@ env:
   # Commit/ref actually built: workflow_dispatch input ref, PR head, or event commit (push)
   COMMIT_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || (github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha) }}
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-southeast-1' }}
-  # S3 upload defaults (override via Variables: DESTINATION_TARGET_PATH or AWS_S3_BUCKET)
+  # S3 upload only on these branches (push); workflow_dispatch uploads when run
+  UPLOAD_S3: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/integration/') || contains(github.ref, '.x'))) }}
   BUCKET_NAME: ${{ vars.AWS_S3_BUCKET || 'oceanbase-seekdb-builds' }}
   DESTINATION_TARGET_PATH: ${{ vars.DESTINATION_TARGET_PATH || format('s3://oceanbase-seekdb-builds/libseekdb/all_commits/{0}', env.COMMIT_SHA) }}
   S3_BUCKET: ${{ vars.AWS_S3_BUCKET || 'oceanbase-seekdb-builds' }}
@@ -136,6 +132,51 @@ jobs:
             '
       - name: Fix ownership (container writes as root)
         run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
+      - name: Setup Node.js (Linux)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Setup Rust (Linux)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Go (Linux)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Test Node.js FFI binding (Linux)
+        run: |
+          cd unittest/include/nodejs
+          npm install
+          bash test.sh
+
+      - name: Test Node.js N-API binding (Linux)
+        run: |
+          PATH=$(echo "$PATH" | tr ':' '\n' | grep -v 'deps/3rd' | tr '\n' ':' | sed 's/:$//')
+          cd unittest/include/nodejs_napi
+          npm install
+          bash test.sh
+
+      - name: Test Python binding (Linux)
+        run: |
+          cd unittest/include/python
+          bash test.sh
+
+      - name: Test Rust binding (Linux)
+        run: |
+          cd unittest/include/rust
+          bash test.sh
+
+      - name: Test Go binding (Linux)
+        run: |
+          PATH=$(echo "$PATH" | tr ':' '\n' | grep -v 'deps/3rd' | tr '\n' ':' | sed 's/:$//')
+          cd unittest/include/go
+          bash test.sh
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -217,6 +258,50 @@ jobs:
           cd build_release && make -j$(sysctl -n hw.ncpu) libseekdb
           ccache -s
 
+      - name: Setup Node.js (macOS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Setup Rust (macOS)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Go (macOS)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Test Node.js FFI binding (macOS)
+        run: |
+          cd unittest/include/nodejs
+          npm install
+          bash test.sh
+
+      - name: Test Node.js N-API binding (macOS)
+        run: |
+          PATH=$(echo "$PATH" | tr ':' '\n' | grep -v 'deps/3rd' | tr '\n' ':' | sed 's/:$//')
+          cd unittest/include/nodejs_napi
+          npm install
+          bash test.sh
+
+      - name: Test Python binding (macOS)
+        run: |
+          cd unittest/include/python
+          bash test.sh
+
+      - name: Test Rust binding (macOS)
+        run: |
+          cd unittest/include/rust
+          bash test.sh
+
+      - name: Test Go binding (macOS)
+        run: |
+          PATH=$(echo "$PATH" | tr ':' '\n' | grep -v 'deps/3rd' | tr '\n' ':' | sed 's/:$//')
+          cd unittest/include/go
+          bash test.sh
+
       # macOS code signing. Entitlements allow loading embedded dylib.
       - name: Create entitlements (macOS)
         run: |
@@ -258,7 +343,7 @@ jobs:
           path: .ccache
           key: ${{ runner.os }}-ccache-libseekdb-${{ matrix.platform }}
 
-  # ---------- Collect libseekdb artifacts and upload to S3 ----------
+  # ---------- Collect libseekdb artifacts and upload to S3 (runs only after all build jobs pass, including binding tests) ----------
   release-artifacts:
     name: Collect artifacts and upload to S3
     runs-on: ubuntu-22.04
@@ -284,7 +369,7 @@ jobs:
           path: release-artifacts/
 
       - name: Configure AWS credentials
-        if: env.DESTINATION_TARGET_PATH != '' || env.S3_BUCKET != ''
+        if: env.UPLOAD_S3 == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -292,7 +377,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Upload to S3
-        if: env.DESTINATION_TARGET_PATH != '' || env.S3_BUCKET != ''
+        if: env.UPLOAD_S3 == 'true'
         run: |
           set -e
           if [ -n "${{ env.DESTINATION_TARGET_PATH }}" ]; then
