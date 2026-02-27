@@ -25,14 +25,11 @@ runs:
         max-size: 800M
         save: ${{inputs.save_cache}}
         key: ${{inputs.os}}
-        # With append-timestamp (default true), saved key becomes os-<timestamp>; restore-keys enables prefix match on restore
-        restore-keys: |
-          ${{ inputs.os }}
 
     - name: Build project
       shell: bash
       run: |
         bash build.sh debug -DOB_USE_CCACHE=ON
         ccache -z
-        cd build_release && make -j4
+        cd build_debug && make -j4
         ccache -s
