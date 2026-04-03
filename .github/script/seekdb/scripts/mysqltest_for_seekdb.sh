@@ -196,15 +196,9 @@ function obd_prepare_global {
     export SLOT_ID="${SLOT_ID:-0}"
     PORT_NUM=$((5000 + SLOT_ID * 100))
 
-    # 根据传入的observer binary判断是否开源版
-    if [[ `$HOME/observer -V 2>&1 | grep -E '(OceanBase CE|OceanBase_CE)'` ]]
-    then
-        COMPONENT="seekdb"
-        export IS_CE=1
-    else
-        COMPONENT="seekdb"
-        export IS_CE=0
-    fi
+    # SeekDB CI：固定按 CE 路径走 OBD/init（原先用 observer -V 判 CE，SeekDB 输出不含 CE 字样会被判成 0）
+    COMPONENT="seekdb"
+    export IS_CE=1
     # 根据build.sh中的内容判断依赖安装路径
     if grep 'dep_create.sh' $HOME/seekdb/build.sh
     then
