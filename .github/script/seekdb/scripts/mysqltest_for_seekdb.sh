@@ -1,14 +1,39 @@
 #!/bin/sh
 
+# Normalise HOME. Some CI/k8s wrappers export HOME=, which yields:
+#   DOWNLOAD_DIR=$HOME/downloads -> /downloads (often not writable)
+#   $HOME/oceanbase/... -> /oceanbase/... (wrong path).
+if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+	export HOME="${GITHUB_WORKSPACE}"
+elif [ -n "${_CONDOR_JOB_IWD:-}" ]; then
+	export HOME="${_CONDOR_JOB_IWD}"
+elif [ -z "${HOME:-}" ] || [ "${HOME}" = "/" ]; then
+	_MF_ROOT="$(cd "$(dirname "$0")/../../../.." >/dev/null 2>&1 && pwd)"
+	if [ -n "$_MF_ROOT" ] && [ -d "$_MF_ROOT/tools/deploy" ]; then
+		export HOME="$_MF_ROOT"
+	fi
+fi
+if [ -z "${HOME:-}" ] && [ -d "$(pwd)/tools/deploy" ]; then
+	export HOME="$(pwd)"
+fi
+
+# seekdb checkout: tools/deploy lives at repo root; this script uses $HOME/oceanbase/tools/deploy.
+if [ -n "${HOME:-}" ] && [ -d "$HOME/tools/deploy" ] && [ ! -e "$HOME/oceanbase" ]; then
+	(cd "$HOME" && ln -s . oceanbase)
+fi
+
 set -x
 
-export HOME=$_CONDOR_JOB_IWD
 export PATH=/bin:/usr/bin
 export USER=$(whoami)
 
 HOST=`hostname -i`
 DOWNLOAD_DIR=$HOME/downloads
-SLOT_ID=`echo $_CONDOR_SLOT | cut -c5-`
+if [ -n "${_CONDOR_SLOT:-}" ]; then
+	SLOT_ID=`echo "$_CONDOR_SLOT" | cut -c5-`
+else
+	SLOT_ID="${SLICE_IDX:-0}"
+fi
 
 function prepare_config {
     if [[ "$MINI" == "1" ]] || ([[ "$MINI" == "-1" ]] && [[ -f $HOME/oceanbase/tools/deploy/enable_mini_mode ]])
@@ -186,7 +211,11 @@ function obd_prepare_global {
     export LANG=en_US.UTF-8
     HOST=`hostname -i`
     DOWNLOAD_DIR=$HOME/downloads
-    SLOT_ID=`echo $_CONDOR_SLOT | cut -c5-`
+    if [[ -n "${_CONDOR_SLOT:-}" ]]; then
+        SLOT_ID=`echo "$_CONDOR_SLOT" | cut -c5-`
+    else
+        SLOT_ID="${SLICE_IDX:-0}"
+    fi
     PORT_NUM=`expr 5000 + $SLOT_ID \* 100`
 
     # 根据传入的observer binary判断是否开源版
@@ -562,7 +591,7 @@ function obd_prepare_bin {
         obs_version=`$DOWNLOAD_DIR/bin/observer -V 2>&1 | grep -E "observer \(OceanBase([ \_]CE)? ([.0-9]+)\)" | grep -Eo '([.0-9]+)'`
     fi
 
-    mkdir $HOME/oceanbase/tools/deploy/admin
+    mkdir -p $HOME/oceanbase/tools/deploy/admin
     if [[ -d $HOME/oceanbase/src/share/inner_table/sys_package ]]
     then 
         cp $HOME/oceanbase/src/share/inner_table/sys_package/*.sql $HOME/oceanbase/tools/deploy/admin/
@@ -1009,10 +1038,10 @@ function obd_collect_log {
     mkdir -p collected_log/obd_log
     mkdir -p collected_log/mysqltest_log
     mkdir -p collected_log/mysqltest_rec_log
-    find $DATA_PATH -name 'core[.-]*' | xargs -i cp {} collected_log
-    [[ "$OBD_HOME" != "" ]] && mv $OBD_HOME/.obd/log/*  collected_log/obd_log/
-    mv oceanbase/tools/deploy/var/log/* collected_log/mysqltest_log/
-    mv oceanbase/tools/deploy/var/rec_log/* collected_log/mysqltest_rec_log/
+    find "$DATA_PATH" -name 'core[.-]*' 2>/dev/null -exec cp -f {} collected_log/ \; || true
+    [[ "$OBD_HOME" != "" && -d "$OBD_HOME/.obd/log" ]] && mv "$OBD_HOME"/.obd/log/* collected_log/obd_log/ 2>/dev/null || true
+    [[ -d oceanbase/tools/deploy/var/log ]] && mv oceanbase/tools/deploy/var/log/* collected_log/mysqltest_log/ 2>/dev/null || true
+    [[ -d oceanbase/tools/deploy/var/rec_log ]] && mv oceanbase/tools/deploy/var/rec_log/* collected_log/mysqltest_rec_log/ 2>/dev/null || true
     mv collected_log collected_log_$SLICE_IDX
     echo "`date "+%F %T"` [INFO] 开始压缩 log"
     if [[ -f /data/farm/tools/pigz ]]
