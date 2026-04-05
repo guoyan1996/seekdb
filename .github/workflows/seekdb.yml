@@ -95,10 +95,13 @@ jobs:
         run: |
           zstd -f -q -T0 -o observer.zst observer
           echo "observer.zst size: $(stat -c%s observer.zst 2>/dev/null || stat -f%z observer.zst 2>/dev/null) bytes"
+      # observer 与 run_attempt 无关：仅重跑失败 job 时 setup 可能跳过，若路径含 attempt-N
+      # 会去找 attempt-2/setup 而产物仍在 attempt-1/setup，导致「observer not found on NFS」。
       - name: Persist observer to NFS
         shell: bash
         run: |
-          DEST_DIR="${{ env.SEEKDB_RESULT_NFS_ROOT }}/${{ github.run_id }}/attempt-${{ github.run_attempt }}/setup"
+          RUN_ROOT="${{ env.SEEKDB_RESULT_NFS_ROOT }}/${{ github.run_id }}"
+          DEST_DIR="$RUN_ROOT/setup"
           mkdir -p "$DEST_DIR"
           cp -f observer.zst "$DEST_DIR/"
           echo "observer.zst saved to $DEST_DIR/observer.zst"
@@ -119,11 +122,28 @@ jobs:
       - name: Place observer (from NFS)
         shell: bash
         run: |
-          OBSERVER_ZST="${{ env.SEEKDB_RESULT_NFS_ROOT }}/${{ github.run_id }}/attempt-${{ github.run_attempt }}/setup/observer.zst"
-          if [[ -f "$OBSERVER_ZST" ]]; then
+          set -eo pipefail
+          RUN_ROOT="${{ env.SEEKDB_RESULT_NFS_ROOT }}/${{ github.run_id }}"
+          ATT="${{ github.run_attempt }}"
+          OBSERVER_ZST=""
+          if [[ -f "$RUN_ROOT/setup/observer.zst" ]]; then
+            OBSERVER_ZST="$RUN_ROOT/setup/observer.zst"
+          elif [[ -f "$RUN_ROOT/attempt-${ATT}/setup/observer.zst" ]]; then
+            OBSERVER_ZST="$RUN_ROOT/attempt-${ATT}/setup/observer.zst"
+          else
+            shopt -s nullglob
+            _fb=( "$RUN_ROOT"/attempt-*/setup/observer.zst )
+            shopt -u nullglob
+            if (( ${#_fb[@]} > 0 )); then
+              OBSERVER_ZST=$(printf '%s\n' "${_fb[@]}" | xargs ls -t | head -1)
+            fi
+          fi
+          if [[ -n "$OBSERVER_ZST" && -f "$OBSERVER_ZST" ]]; then
+            echo "Using observer.zst: $OBSERVER_ZST"
             zstd -d -f -q -o observer "$OBSERVER_ZST" && chmod +x observer
           else
-            echo "observer not found on NFS"
+            echo "observer not found on NFS under $RUN_ROOT (tried setup/ and attempt-*/setup/)"
+            exit 1
           fi
           ls -la observer
       - name: Run mysqltest slice
