@@ -198,7 +198,6 @@ function obd_prepare_global {
 
     # SeekDB CI：固定按 CE 路径走 OBD/init（原先用 observer -V 判 CE，SeekDB 输出不含 CE 字样会被判成 0）
     COMPONENT="seekdb"
-    export IS_CE=1
     # 根据build.sh中的内容判断依赖安装路径
     if grep 'dep_create.sh' $HOME/seekdb/build.sh
     then
